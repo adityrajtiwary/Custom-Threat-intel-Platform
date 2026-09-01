@@ -1,0 +1,16 @@
+# Secrets -- kabhi commit nahi
+.env
+*.env
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+nvd_run.log
+articles_run.log
+
+# OS
+.DS_Store
