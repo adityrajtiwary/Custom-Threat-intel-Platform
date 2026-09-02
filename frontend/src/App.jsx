@@ -1,7 +1,8 @@
 import CountUp from './CountUp'
+import Login from './Login'
 import { useState, useEffect } from 'react'
 import {
-  Shield, Activity, AlertTriangle, Bug, Users, FileText,
+  Shield, Activity, AlertTriangle, Bug, Users, FileText, LogOut,
   Repeat, ChevronRight, X, Search, ExternalLink, TrendingUp,
 } from 'lucide-react'
 import {
@@ -21,7 +22,11 @@ function severityBadge(sev) {
 }
 
 export default function App() {
+  const [authed, setAuthed] = useState(!!localStorage.getItem('ti_token'))
   const [page, setPage] = useState('overview')
+
+  if (!authed) return <Login onSuccess={() => setAuthed(true)} />
+
   const [detail, setDetail] = useState(null)   // IOC detail panel
   const [iocFilter, setIocFilter] = useState({})  // drill-down filter for IOC page
 
@@ -34,6 +39,11 @@ export default function App() {
   ]
 
   // helper: jump to IOC page with a filter applied (drill-down from cards)
+  function logout() {
+    localStorage.removeItem('ti_token')
+    window.location.reload()
+  }
+
   function drillToIOCs(filter) {
     setIocFilter(filter)
     setPage('iocs')
@@ -57,6 +67,11 @@ export default function App() {
             </div>
           )
         })}
+        <div className="nav-item" onClick={logout}
+          style={{ marginTop: 'auto', color: '#dc2626' }}>
+          <LogOut size={18} />
+          Logout
+        </div>
       </aside>
 
       <main className="main">

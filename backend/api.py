@@ -1,27 +1,30 @@
 import os
 import psycopg2
 import psycopg2.extras
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from dotenv import load_dotenv
+from auth import verify_password, verify_totp, create_token, verify_token
 
 load_dotenv()
 
 app = FastAPI(title="Threat Intel API")
 
-# CORS -- React (browser) se call ho sake
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # dev ke liye sab allow; production me specific origin
+    allow_origins=["https://192.168.15.100", "http://localhost:5173"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ---------- DB ----------
 def db():
     return psycopg2.connect(
         host=os.getenv("DB_HOST"), port=os.getenv("DB_PORT"),
-        dbname=os.getenv("DB_NAME"), user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
+        dbname=os.getenv("DB_NAME"),
+        user=os.getenv("API_DB_USER", os.getenv("DB_USER")),
+        password=os.getenv("API_DB_PASSWORD", os.getenv("DB_PASSWORD")),
         cursor_factory=psycopg2.extras.RealDictCursor,
     )
 
@@ -36,9 +39,40 @@ def query_one(sql, params=None):
     rows = query(sql, params)
     return rows[0] if rows else None
 
+# ---------- AUTH ----------
+class LoginReq(BaseModel):
+    username: str
+    password: str
+    otp: str
 
+@app.post("/login")
+def login(req: LoginReq):
+    admin_user = os.getenv("ADMIN_USER")
+    pass_hash  = os.getenv("ADMIN_PASS_HASH")
+    mfa_secret = os.getenv("MFA_SECRET")
+
+    if req.username != admin_user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if not verify_password(req.password, pass_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if not verify_totp(mfa_secret, req.otp):
+        raise HTTPException(status_code=401, detail="Invalid OTP")
+
+    return {"token": create_token(req.username)}
+
+# dependency -- har protected endpoint ise use karega
+def require_auth(authorization: str = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token = authorization.split(" ", 1)[1]
+    user = verify_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return user
+
+# ---------- PROTECTED ENDPOINTS ----------
 @app.get("/stats")
-def stats():
+def stats(user: str = Depends(require_auth)):
     return {
         "total_iocs":     query_one("SELECT COUNT(*) c FROM iocs")["c"],
         "active_iocs":    query_one("SELECT COUNT(*) c FROM iocs WHERE is_active=true")["c"],
@@ -50,18 +84,14 @@ def stats():
         "apt_groups":     query_one("SELECT COUNT(*) c FROM apt_groups")["c"],
     }
 
-
 @app.get("/iocs")
 def iocs(
-    ioc_type: str = Query(None),
-    source: str = Query(None),
-    active_only: bool = Query(False),
-    search: str = Query(None),
-    limit: int = Query(50, le=200),
-    offset: int = Query(0),
+    ioc_type: str = Query(None), source: str = Query(None),
+    active_only: bool = Query(False), search: str = Query(None),
+    limit: int = Query(50, le=200), offset: int = Query(0),
+    user: str = Depends(require_auth),
 ):
-    where = []
-    params = []
+    where = []; params = []
     if ioc_type:
         where.append("i.ioc_type=%s"); params.append(ioc_type)
     if active_only:
@@ -72,7 +102,6 @@ def iocs(
         where.append("EXISTS (SELECT 1 FROM ioc_sightings s WHERE s.ioc_id=i.id AND s.source=%s)")
         params.append(source)
     clause = ("WHERE " + " AND ".join(where)) if where else ""
-
     total = query_one(f"SELECT COUNT(*) c FROM iocs i {clause}", params)["c"]
     rows = query(f"""
         SELECT i.id, i.ioc_type, i.value, i.malware, i.threat_type,
@@ -84,37 +113,29 @@ def iocs(
     """, params + [limit, offset])
     return {"total": total, "limit": limit, "offset": offset, "data": rows}
 
-
 @app.get("/iocs/recurring")
-def recurring_iocs(limit: int = Query(20, le=100)):
+def recurring_iocs(limit: int = Query(20, le=100), user: str = Depends(require_auth)):
     return query("""
-        SELECT id, ioc_type, value, malware, reason, times_seen,
-               first_seen, last_seen
+        SELECT id, ioc_type, value, malware, reason, times_seen, first_seen, last_seen
         FROM iocs WHERE times_seen>1
-        ORDER BY times_seen DESC, last_seen DESC
-        LIMIT %s
+        ORDER BY times_seen DESC, last_seen DESC LIMIT %s
     """, [limit])
 
-
 @app.get("/ioc/{value}")
-def ioc_detail(value: str):
+def ioc_detail(value: str, user: str = Depends(require_auth)):
     ioc = query_one("SELECT * FROM iocs WHERE value=%s", [value])
     if not ioc:
         return {"error": "not found"}
     sightings = query("""
-        SELECT source, seen_at FROM ioc_sightings
-        WHERE ioc_id=%s ORDER BY seen_at DESC
+        SELECT source, seen_at FROM ioc_sightings WHERE ioc_id=%s ORDER BY seen_at DESC
     """, [ioc["id"]])
     return {"ioc": ioc, "sightings": sightings}
 
-
 @app.get("/cves")
 def cves(
-    severity: str = Query(None),
-    kev_only: bool = Query(False),
-    min_cvss: float = Query(None),
-    limit: int = Query(50, le=200),
-    offset: int = Query(0),
+    severity: str = Query(None), kev_only: bool = Query(False),
+    min_cvss: float = Query(None), limit: int = Query(50, le=200), offset: int = Query(0),
+    user: str = Depends(require_auth),
 ):
     where = []; params = []
     if severity:
@@ -127,38 +148,31 @@ def cves(
     total = query_one(f"SELECT COUNT(*) c FROM cves {clause}", params)["c"]
     rows = query(f"""
         SELECT cve_id, cvss_score, severity, description, kev_listed, published
-        FROM cves {clause}
-        ORDER BY cvss_score DESC NULLS LAST
-        LIMIT %s OFFSET %s
+        FROM cves {clause} ORDER BY cvss_score DESC NULLS LAST LIMIT %s OFFSET %s
     """, params + [limit, offset])
     return {"total": total, "data": rows}
 
-
 @app.get("/apt")
-def apt():
+def apt(user: str = Depends(require_auth)):
     return query("SELECT * FROM apt_groups ORDER BY times_seen DESC, name")
 
-
 @app.get("/articles")
-def articles(limit: int = Query(30, le=100)):
+def articles(limit: int = Query(30, le=100), user: str = Depends(require_auth)):
     return query("""
         SELECT title, link, published, summary, apt_groups, malware
         FROM articles ORDER BY id DESC LIMIT %s
     """, [limit])
 
-
 @app.get("/charts/ioc-types")
-def chart_ioc_types():
+def chart_ioc_types(user: str = Depends(require_auth)):
     return query("""
         SELECT ioc_type AS name, COUNT(*) AS value
         FROM iocs GROUP BY ioc_type ORDER BY value DESC
     """)
 
-
 @app.get("/charts/severity")
-def chart_severity():
+def chart_severity(user: str = Depends(require_auth)):
     return query("""
         SELECT severity AS name, COUNT(*) AS value
-        FROM cves WHERE severity IS NOT NULL
-        GROUP BY severity ORDER BY value DESC
+        FROM cves WHERE severity IS NOT NULL GROUP BY severity ORDER BY value DESC
     """)
