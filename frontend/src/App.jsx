@@ -1,5 +1,6 @@
 import CountUp from './CountUp'
 import Login from './Login'
+import ChatBot from './ChatBot'
 import { useState, useEffect } from 'react'
 import {
   Shield, Activity, AlertTriangle, Bug, Users, FileText, LogOut,
@@ -83,6 +84,7 @@ export default function App() {
       </main>
 
       {detail && <DetailPanel value={detail} onClose={() => setDetail(null)} />}
+      <ChatBot />
     </div>
   )
 }
@@ -170,6 +172,23 @@ function Overview({ drillToIOCs, setDetail, setPage }) {
               </Bar>
             </BarChart>
           </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 24 }}>
+        <div className="section-title"><AlertTriangle size={16} color="#dc2626" /> Risk Breakdown</div>
+        <div className="grid" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
+          {[
+            { label: 'HIGH', value: stats.risk_high || 0, color: '#dc2626', bg: '#fef2f2' },
+            { label: 'MEDIUM', value: stats.risk_medium || 0, color: '#ea580c', bg: '#fff7ed' },
+            { label: 'LOW', value: stats.risk_low || 0, color: '#16a34a', bg: '#f0fdf4' },
+          ].map(r => (
+            <div key={r.label} onClick={() => drillToIOCs({ risk: r.label })}
+              style={{ cursor: 'pointer', padding: 16, borderRadius: 10, background: r.bg, textAlign: 'center' }}>
+              <div style={{ fontSize: 26, fontWeight: 700, color: r.color }}>{r.value.toLocaleString()}</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: r.color, marginTop: 4 }}>{r.label} RISK</div>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -400,6 +419,28 @@ function DetailPanel({ value, onClose }) {
             <div style={{ fontSize: 12, color: '#6b7688', fontWeight: 600, textTransform: 'uppercase', marginBottom: 6 }}>Why flagged</div>
             <div style={{ fontSize: 13, lineHeight: 1.6 }}>{d.ioc.reason || '—'}</div>
           </div>
+
+          {d.enrichment && (
+            <>
+              <div className="section-title" style={{ marginTop: 24, fontSize: 14 }}>Enrichment</div>
+              {d.enrichment.abuse_score != null && (
+                <DetailRow label="Abuse Score" value={
+                  <span className={"badge " + (d.enrichment.abuse_score >= 50 ? "badge-critical" : d.enrichment.abuse_score >= 15 ? "badge-high" : "badge-low")}>
+                    {d.enrichment.abuse_score}% ({d.enrichment.abuse_reports || 0} reports)
+                  </span>
+                } />
+              )}
+              <DetailRow label="Country" value={d.enrichment.abuse_country} />
+              <DetailRow label="ISP" value={d.enrichment.abuse_isp} />
+              <DetailRow label="Usage" value={d.enrichment.abuse_usage} />
+              {d.enrichment.shodan_ports && d.enrichment.shodan_ports !== 'none' && (
+                <DetailRow label="Open Ports" value={
+                  <span className="mono" style={{ fontSize: 12 }}>{d.enrichment.shodan_ports}</span>
+                } />
+              )}
+              <DetailRow label="Shodan Org" value={d.enrichment.shodan_org && d.enrichment.shodan_org !== 'none' ? d.enrichment.shodan_org : null} />
+            </>
+          )}
 
           <div className="section-title" style={{ marginTop: 24, fontSize: 14 }}>Sighting History</div>
           {d.sightings.map((s, i) => (

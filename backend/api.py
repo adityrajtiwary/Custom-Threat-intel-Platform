@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from auth import verify_password, verify_totp, create_token, verify_token
+from chatbot import chat_query
 
 load_dotenv()
 
@@ -70,6 +71,14 @@ def require_auth(authorization: str = Header(None)):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     return user
 
+
+class ChatReq(BaseModel):
+    question: str
+
+@app.post("/chat")
+def chat(req: ChatReq, user: str = Depends(require_auth)):
+    return chat_query(req.question)
+
 # ---------- PROTECTED ENDPOINTS ----------
 @app.get("/stats")
 def stats(user: str = Depends(require_auth)):
@@ -82,6 +91,9 @@ def stats(user: str = Depends(require_auth)):
         "kev_cves":       query_one("SELECT COUNT(*) c FROM cves WHERE kev_listed=true")["c"],
         "articles":       query_one("SELECT COUNT(*) c FROM articles")["c"],
         "apt_groups":     query_one("SELECT COUNT(*) c FROM apt_groups")["c"],
+        "risk_high":      query_one("SELECT COUNT(*) c FROM iocs WHERE risk_level='HIGH'")["c"],
+        "risk_medium":    query_one("SELECT COUNT(*) c FROM iocs WHERE risk_level='MEDIUM'")["c"],
+        "risk_low":       query_one("SELECT COUNT(*) c FROM iocs WHERE risk_level='LOW'")["c"],
     }
 
 @app.get("/iocs")
@@ -106,7 +118,7 @@ def iocs(
     rows = query(f"""
         SELECT i.id, i.ioc_type, i.value, i.malware, i.threat_type,
                i.reason, i.confidence, i.times_seen, i.is_active,
-               i.first_seen, i.last_seen
+               i.risk_score, i.risk_level, i.first_seen, i.last_seen
         FROM iocs i {clause}
         ORDER BY i.times_seen DESC, i.last_seen DESC
         LIMIT %s OFFSET %s
@@ -129,7 +141,12 @@ def ioc_detail(value: str, user: str = Depends(require_auth)):
     sightings = query("""
         SELECT source, seen_at FROM ioc_sightings WHERE ioc_id=%s ORDER BY seen_at DESC
     """, [ioc["id"]])
-    return {"ioc": ioc, "sightings": sightings}
+    enrichment = query_one("""
+        SELECT abuse_score, abuse_reports, abuse_country, abuse_isp, abuse_usage,
+               shodan_ports, shodan_org, enriched_at
+        FROM ioc_enrichment WHERE ioc_id=%s
+    """, [ioc["id"]])
+    return {"ioc": ioc, "sightings": sightings, "enrichment": enrichment}
 
 @app.get("/cves")
 def cves(
